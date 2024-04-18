@@ -8,16 +8,17 @@
 import json
 import random
 
-import pandas as pd
+import h5py
 from tqdm import tqdm
+import torch
+import clip
+import numpy as np
 
-from VideoCaption_Hallucination.video_utils import VideoUtils
 from VideoCaption_Hallucination.File_Tools import File_Tools
-import nltk
 from nltk.stem import WordNetLemmatizer
 
 # 0代表MSVD/1代表MSRVTT
-dt = 0
+dt = 1
 dataset_type = ['msvd', 'msrvtt']
 dataset_path = ["/home/wy3/zjc_data/datasets/MSVD-QA/", "/home/wy3/zjc_data/datasets/MSR-VTT/"]
 data_fts_path = ["/home/wy3/zjc_data/datasets/MSVD-QA/msvd_video_clip_ViT_L_14_fts_four.hdf5",
@@ -30,6 +31,13 @@ captions_path = ["/home/wy3/zjc_data/datasets/MSVD-QA/msvd_combine_frame_retriev
 data_split = ["train", "val", "test"]
 
 dataset_type = dataset_type[dt]
+# device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cpu"
+
+classification_type = 3
+label_smoothing_epsilon = 0.2
+tem_p = 2
+
 
 def load_data_for_training_HU(annot_path):
     annotations = json.load(open(annot_path))
@@ -47,6 +55,25 @@ def load_data_for_training_HU(annot_path):
 
     return data
 
+
+def compute_cosine_similarity(video_fts, cap_fts):
+    similarities = []
+    for img_fts in video_fts:
+        # 计算点积
+        dot_product = torch.sum(img_fts * cap_fts)
+
+        # 计算向量的范数
+        img_norm = torch.norm(img_fts)
+        cap_norm = torch.norm(cap_fts)
+
+        # 计算余弦相似度
+        cosine_similarity = dot_product / (img_norm * cap_norm)
+        similarities.append(cosine_similarity)
+
+    similarities_tensor = torch.tensor(similarities)
+    similarity = torch.mean(similarities_tensor)
+    similarity_float = similarity.item()
+    return similarity_float
 
 def random_choice():
     choices = [0, 1, 2, 3]
@@ -122,6 +149,39 @@ def load_data_for_training_MSR_VTT(annot_path, caps_path=None):
 
     return data
 
+def get_smoothing_label(label_list, fts_key, fts_data, hu_sentences, clip_model):
+    video_fts = fts_data["video_fts"][fts_key][()]
+    video_fts = torch.tensor(video_fts, dtype=torch.float, device=device)
+    with torch.no_grad():
+        input_ids = clip.tokenize(hu_sentences)
+        hu_caption_clip = clip_model.encode_text(input_ids)
+
+    video_caption_cos = compute_cosine_similarity(video_fts, hu_caption_clip)
+
+    for i in range(len(label_list)):
+        if i == 0:
+            label_list[i] = (1 - label_smoothing_epsilon) * label_list[i] + label_smoothing_epsilon * video_caption_cos * tem_p
+        else:
+            label_list[i] = (1 - label_smoothing_epsilon) * label_list[i] + (label_smoothing_epsilon - (label_smoothing_epsilon * video_caption_cos * tem_p)) / (classification_type - 1)
+
+    return label_list, video_caption_cos
+
+def get_features_labels_(split_text, clip_model, a_path, fts_path):
+    data = load_data_for_training_HU(a_path)
+    hu_data = data[split_text]
+    h5_features = h5py.File(fts_path, 'r')
+    hu_features = []
+    hu_labels = []
+    for item in tqdm(hu_data):
+        hu_labels.append(item["label_list"])
+        with torch.no_grad():
+            input_ids = clip.tokenize(item["text_hallucination"]).to(device)
+            hu_caption_clip = clip_model.encode_text(input_ids).cpu().numpy()
+        video_fts = h5_features["video_fts"][item["fts_key"]][()]
+        padded_arr = np.pad(video_fts, [(0, 80 - video_fts.shape[0]), (0, 0)], mode='constant')
+        hu_f = np.vstack((hu_caption_clip, padded_arr))
+        hu_features.append(hu_f)
+    return hu_data, np.array(hu_features), np.array(hu_labels)
 
 
 def dataset_create():
@@ -130,6 +190,12 @@ def dataset_create():
         data = load_data_for_training_MSVD(mapping_file[0], annotations_path[0])
     elif dataset_type == 'msrvtt':
         data = load_data_for_training_MSR_VTT(annotations_path[1])
+
+    clip_model, feature_extractor = clip.load("ViT-L/14", device=device, download_root='../../../clip_checkpoints')
+    video_fts_data = h5py.File(data_fts_path[dt], 'r')
+
+    min_cos = 0
+    max_cos = 0
 
     train_data = data['train']
     object_dict = File_Tools.load_json_data(dataset_path[dt] + "action_object/" + dataset_type + "_object_dict.json")
@@ -225,34 +291,27 @@ def dataset_create():
 
         anno_info.update({"text_hallucination": text_hu})
         anno_info.update({"text_label": text_label})
+        label_list, COS_VT = get_smoothing_label(label_list, anno_info["fts_key"], video_fts_data, text_hu, clip_model)
+        if COS_VT < min_cos:
+            min_cos = COS_VT
+        if COS_VT > max_cos:
+            max_cos = COS_VT
         anno_info.update({"label_list": label_list})
         anno_info.update({"hallucination_type_text": hu_type_text})
         anno_info.update({"split": split_text})
         hu_dataset.append(anno_info)
         continue
 
-    File_Tools.write_to_json(dataset_path[dt] + dataset_type + "_hallucination_dataset_sv.json", hu_dataset)
-    print("数据文件已经保存到" + dataset_path[dt] + dataset_type + "_hallucination_dataset_sv.json")
+    File_Tools.write_to_json(dataset_path[dt] + dataset_type + "_hallucination_dataset_sv_ls.json", hu_dataset)
+    print("数据文件已经保存到" + dataset_path[dt] + dataset_type + "_hallucination_dataset_sv_ls.json")
 
-# dataset_create()
+    print("min:" + str(min_cos))
+    print("max:" + str(max_cos))
+
+
+
 if __name__ == '__main__':
-    # video_uts = VideoUtils()
-    if dataset_type == 'msvd':
-        data = load_data_for_training_MSVD(mapping_file[0], annotations_path[0])
-    elif dataset_type == 'msrvtt':
-        data = load_data_for_training_MSR_VTT(annotations_path[1])
 
-    train_data = data['train']
-    object_dict = File_Tools.load_json_data(dataset_path[dt] + "action_object/" + dataset_type + "_object_dict.json")
-    action_dict = File_Tools.load_json_data(dataset_path[dt] + "action_object/" + dataset_type + "_action_dict.json")
+    dataset_create()
 
 
-
-    # 所有的单词和动作的出现频次
-    object_occurrences = File_Tools.get_count_word_occurrences(object_dict)
-    action_occurrences = File_Tools.get_count_word_occurrences(action_dict)
-
-
-
-    input()
-    pass
