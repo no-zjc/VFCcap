@@ -114,37 +114,37 @@ class ThisGPT2Attention(GPT2Attention):
 
             split_size = int(self.split_size / self.cross_attention_reduce_factor)
             head_dim = int(self.head_dim / self.cross_attention_reduce_factor)
-            # encoder_hidden_states = self.mapping_att(encoder_hidden_states)
+            encoder_hidden_states = self.mapping_att(encoder_hidden_states)
 
-            # # visual input attention fusion
-            # split_dim = 80
-            # encoder_out_dim = encoder_hidden_states.size(1)
-            # split_dim_tail = encoder_out_dim - split_dim
-            #
-            # query_clip, key_value_oa = encoder_hidden_states.split([split_dim, split_dim_tail], dim=1)
-            #
-            # query_v = self.q_attn_v.forward(query_clip)
-            # key_v, value_v = self.c_attn_v(key_value_oa).split(split_size, dim=2)
-            # attention_mask_v = encoder_attention_mask[:, :, :, split_dim:encoder_out_dim]
-            #
-            # query_v = self._split_heads(query_v, self.num_heads, head_dim)
-            # key_v = self._split_heads(key_v, self.num_heads, head_dim)
-            # value_v = self._split_heads(value_v, self.num_heads, head_dim)
-            #
-            # attn_output_v, attn_weights_v = self._attn(query_v, key_v, value_v, attention_mask_v, head_mask)
-            #
-            # attn_output_v = self._merge_heads(attn_output_v, self.num_heads,
-            #                                       int(self.head_dim / self.cross_attention_reduce_factor))
-            # attn_output_v = self.c_proj(attn_output_v)
-            # attn_output_v = self.resid_dropout(attn_output_v)
+            # visual input attention fusion
+            split_dim = 80
+            encoder_out_dim = encoder_hidden_states.size(1)
+            split_dim_tail = encoder_out_dim - split_dim
+            
+            query_clip, key_value_oa = encoder_hidden_states.split([split_dim, split_dim_tail], dim=1)
+            
+            query_v = self.q_attn_v.forward(query_clip)
+            key_v, value_v = self.c_attn_v(key_value_oa).split(split_size, dim=2)
+            attention_mask_v = encoder_attention_mask[:, :, :, split_dim:encoder_out_dim]
+            
+            query_v = self._split_heads(query_v, self.num_heads, head_dim)
+            key_v = self._split_heads(key_v, self.num_heads, head_dim)
+            value_v = self._split_heads(value_v, self.num_heads, head_dim)
+            
+            attn_output_v, attn_weights_v = self._attn(query_v, key_v, value_v, attention_mask_v, head_mask)
+            
+            attn_output_v = self._merge_heads(attn_output_v, self.num_heads,
+                                                  int(self.head_dim / self.cross_attention_reduce_factor))
+            attn_output_v = self.c_proj(attn_output_v)
+            attn_output_v = self.resid_dropout(attn_output_v)
 
             # 注意力融合视觉输入和语言模型的隐空间
-            # attention_mask = encoder_attention_mask[:, :, :, :split_dim]
-            # key, value = self.c_attn(attn_output_v).split(split_size, dim=2)
+            attention_mask = encoder_attention_mask[:, :, :, :split_dim]
+            key, value = self.c_attn(attn_output_v).split(split_size, dim=2)
 
-            key, value = self.c_attn(encoder_hidden_states).split(split_size, dim=2)
+            # key, value = self.c_attn(encoder_hidden_states).split(split_size, dim=2)
             query = self.q_attn(hidden_states)
-            attention_mask = encoder_attention_mask
+            # attention_mask = encoder_attention_mask
 
             # # 计算输入张量最后一维的平均值
             # mean_tensor = torch.mean(attn_output_v, dim=-1)
