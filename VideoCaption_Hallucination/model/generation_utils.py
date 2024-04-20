@@ -1751,7 +1751,7 @@ class GenerationMixin:
             top_k_llm_next_tokens = 20
             top_values, top_k_next_tokens = torch.topk(next_tokens_scores, top_k_llm_next_tokens)
 
-            if hallucination_model is not None and False:
+            if hallucination_model is not None:
                 encoder_output = model_inputs["encoder_outputs"]["last_hidden_state"][0]
                 cur_token_list = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
                 infer_token = cur_token_list[0][prefix_id:]
@@ -1796,12 +1796,12 @@ class GenerationMixin:
                             cur_hallucination_type = 2
 
                     # 融合视觉约束和语言模型候选
-                    if cur_word_label == cur_hallucination_type and cur_hallucination_type == 1:
+                    if cur_word_label == cur_hallucination_type:
                         sg_candidate_words = Generation_Tool.get_sg_candidate_words(visual_constraints, cur_hallucination_type, sg_top_k)
                         sg_candidate_words = [s.split(' ') for s in sg_candidate_words]
 
-                        # candidate_words = llm_candidate_words + sg_candidate_words
-                        candidate_words = llm_candidate_words
+                        candidate_words = llm_candidate_words + sg_candidate_words
+                        # candidate_words = llm_candidate_words
                         # candidate_words = sg_candidate_words
 
                         identity_feature = []
